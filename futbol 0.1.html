@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pixel FIFA - KRM Career</title>
+    <style>
+        body { background: #1a1a1a; color: #fff; font-family: 'Courier New', monospace; display: flex; flex-direction: column; align-items: center; margin: 0; overflow: hidden; }
+        #game-container { width: 600px; background: #333; border: 6px solid #555; padding: 15px; margin-top: 10px; text-align: center; }
+        .screen { display: none; }
+        .active { display: block; }
+        
+        /* Saha Ayarları */
+        canvas { background: #2d5a27; border: 4px solid #fff; display: block; margin: 0 auto; cursor: crosshair; }
+        
+        .stat-bar { background: #000; padding: 10px; display: flex; justify-content: space-between; margin-bottom: 10px; border: 2px solid #ffd700; }
+        .krm-text { color: #ffd700; font-weight: bold; }
+        
+        button { background: #444; color: #fff; border: 3px outset #666; padding: 10px 20px; cursor: pointer; font-family: inherit; font-weight: bold; margin: 5px; }
+        button:hover { background: #555; }
+
+        #editor-grid { display: grid; grid-template-columns: repeat(10, 15px); gap: 1px; margin: 10px auto; width: 160px; }
+        .pixel { width: 15px; height: 15px; background: #fff; cursor: pointer; }
+        
+        .controls-hint { font-size: 12px; color: #aaa; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div class="stat-bar">
+        <span id="display-team">Takım: -</span>
+        <span id="match-timer" style="color: #ffeb3b; font-size: 20px;">00:00</span>
+        <span class="krm-text">KRM: <span id="balance">0</span></span>
+    </div>
+
+    <!-- 1. SETUP -->
+    <div id="setup-screen" class="screen active">
+        <h2>YENİ KARİYER</h2>
+        <input type="text" id="input-country" placeholder="Ülke">
+        <input type="text" id="input-name" placeholder="Takım İsmi">
+        <button onclick="saveInitialSetup()">İleri</button>
+    </div>
+
+    <!-- 2. LOGO -->
+    <div id="logo-screen" class="screen">
+        <h3>LOGONU ÇİZ</h3>
+        <div id="editor-grid"></div>
+        <input type="color" id="color-picker" value="#ff0000">
+        <button onclick="finishLogo()">Kaydet ve Odaya Geç</button>
+    </div>
+
+    <!-- 3. SOYUNMA ODASI -->
+    <div id="locker-room" class="screen">
+        <div id="saved-logo-display"></div>
+        <h2 id="room-title">SOYUNMA ODASI</h2>
+        <p>Hazırsan sahaya çık ve KRM'leri topla!</p>
+        <button onclick="startMatch()">MAÇA BAŞLA</button>
+        <button onclick="resetGame()" style="color:red">SIFIRLA</button>
+        <div class="controls-hint">Kontroller: Hareket [WASD / Ok Tuşları] - Şut [Boşluk / Space]</div>
+    </div>
+
+    <!-- 4. MAÇ (FIFA STYLE) -->
+    <div id="match-screen" class="screen">
+        <canvas id="field" width="500" height="350"></canvas>
+        <div id="match-log" style="font-size: 14px; margin-top: 5px; color: #00ff00;">Saha temiz, başarılar!</div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('field');
+    const ctx = canvas.getContext('2d');
+    
+    let gameState = { country: "", teamName: "", krmCoin: 0, logo: [], hasStarted: false };
+    let keys = {};
+    let matchActive = false;
+    let matchMin = 0;
+    let gameLoopReq;
+
+    // Oyuncu ve Top Objeleri
+    const player = { x: 50, y: 175, size: 12, speed: 4, color: '#3498db' };
+    const ball = { x: 250, y: 175, size: 7, dx: 0, dy: 0, friction: 0.96, owner: null };
+    const enemy = { x: 420, y: 175, size: 12, speed: 2.5, color: '#e74c3c' };
+
+    // --- SES MOTORU ---
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playSfx(freq, type, duration) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + duration);
+    }
+
+    // --- SİSTEM ---
+    function init() {
+        const saved = localStorage.getItem('pixelFifa_v3');
+        if (saved) {
+            gameState = JSON.parse(saved);
+            if(gameState.hasStarted) { showScreen('locker-room'); updateUI(); renderSavedLogo(); }
+        }
+        createEditor();
+    }
+
+    function showScreen(id) {
+        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+        document.getElementById(id).classList.add('active');
+    }
+
+    function updateUI() {
+        document.getElementById('display-team').innerText = gameState.teamName || "-";
+        document.getElementById('balance').innerText = gameState.krmCoin;
+        document.getElementById('room-title').innerText = gameState.teamName + " Odası";
+    }
+
+    // --- MAÇ MOTORU (FIFA STYLE) ---
+    function startMatch() {
+        showScreen('match-screen');
+        matchActive = true;
+        matchMin = 0;
+        resetPositions();
+        playSfx(800, 'sine', 0.5); // Başlangıç düdüğü
+        
+        // Zamanlayıcı: 1 dak = 0.5sn
+        const timerInt = setInterval(() => {
+            if(!matchActive) { clearInterval(timerInt); return; }
+            matchMin++;
+            document.getElementById('match-timer').innerText = `DK: ${matchMin}'`;
+            if(matchMin >= 90) endMatch();
+        }, 500);
+
+        gameLoop();
+    }
+
+    function resetPositions() {
+        player.x = 50; player.y = 175;
+        ball.x = 250; ball.y = 175; ball.dx = 0; ball.dy = 0; ball.owner = null;
+        enemy.x = 420; enemy.y = 175;
+    }
+
+    function gameLoop() {
+        if(!matchActive) return;
+        update();
+        draw();
+        gameLoopReq = requestAnimationFrame(gameLoop);
+    }
+
+    function update() {
+        // Oyuncu Hareketi
+        if (keys['ArrowUp'] || keys['w']) player.y -= player.speed;
+        if (keys['ArrowDown'] || keys['s']) player.y += player.speed;
+        if (keys['ArrowLeft'] || keys['a']) player.x -= player.speed;
+        if (keys['ArrowRight'] || keys['d']) player.x += player.speed;
+
+        // Sınırlar
+        player.x = Math.max(10, Math.min(490, player.x));
+        player.y = Math.max(10, Math.min(340, player.y));
+
+        // Top Yakalama (Dribbling)
+        let dist = Math.hypot(player.x - ball.x, player.y - ball.y);
+        if(dist < 20) {
+            ball.owner = 'player';
+            ball.x = player.x + 10;
+            ball.y = player.y;
+        }
+
+        // Şut Çekme
+        if(keys[' '] && ball.owner === 'player') {
+            ball.owner = null;
+            ball.dx = 12; // İleri doğru sert şut
+            ball.dy = (Math.random() - 0.5) * 4;
+            playSfx(300, 'square', 0.2);
+        }
+
+        // Top Fiziği
+        ball.x += ball.dx;
+        ball.y += ball.dy;
+        ball.dx *= ball.friction;
+        ball.dy *= ball.friction;
+
+        // Rakip AI (Seni kovalar)
+        let distEnemy = Math.hypot(enemy.x - ball.x, enemy.y - ball.y);
+        if(distEnemy > 15) {
+            enemy.x += (ball.x - enemy.x) * 0.03;
+            enemy.y += (ball.y - enemy.y) * 0.03;
+        } else {
+            ball.owner = 'enemy'; // Rakip topu kapar
+            ball.dx = -5; // Topu uzaklaştırır
+        }
+
+        // Gol Kontrolü (Sağ kale)
+        if(ball.x > 480 && ball.y > 120 && ball.y < 230) {
+            goalScored();
+        }
+
+        // Saha dışı kontrolü
+        if(ball.x < 0 || ball.x > 500 || ball.y < 0 || ball.y > 350) {
+            ball.dx *= -1; ball.dy *= -1; // Basit sekme
+        }
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Saha Çizgileri
+        ctx.strokeStyle = "rgba(255,255,255,0.5)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(0, 0, 500, 350);
+        ctx.beginPath(); ctx.moveTo(250, 0); ctx.lineTo(250, 350); ctx.stroke();
+        
+        // Kaleler
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(490, 120, 10, 110); // Rakip kale
+        ctx.fillRect(0, 120, 10, 110);   // Bizim kale
+
+        // Oyuncu
+        ctx.fillStyle = player.color;
+        ctx.fillRect(player.x - 6, player.y - 6, 12, 12);
+        
+        // Rakip
+        ctx.fillStyle = enemy.color;
+        ctx.fillRect(enemy.x - 6, enemy.y - 6, 12, 12);
+
+        // Top
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, ball.size, 0, Math.PI*2);
+        ctx.fill();
+    }
+
+    function goalScored() {
+        matchActive = false;
+        playSfx(600, 'sawtooth', 0.8);
+        gameState.krmCoin += 250;
+        alert("GOOOOOOLLLLL! +250 KRM COIN");
+        saveGame();
+        updateUI();
+        showScreen('locker-room');
+    }
+
+    function endMatch() {
+        matchActive = false;
+        playSfx(400, 'sine', 1);
+        alert("Maç Bitti! Dönülüyor...");
+        showScreen('locker-room');
+        saveGame();
+    }
+
+    // --- DİĞER FONKSİYONLAR ---
+    window.addEventListener('keydown', e => keys[e.key] = true);
+    window.addEventListener('keyup', e => keys[e.key] = false);
+
+    function createEditor() {
+        const grid = document.getElementById('editor-grid');
+        for (let i = 0; i < 100; i++) {
+            const div = document.createElement('div');
+            div.className = 'pixel';
+            div.onclick = () => div.style.backgroundColor = document.getElementById('color-picker').value;
+            grid.appendChild(div);
+        }
+    }
+
+    function saveInitialSetup() {
+        gameState.country = document.getElementById('input-country').value;
+        gameState.teamName = document.getElementById('input-name').value;
+        if(gameState.teamName) showScreen('logo-screen');
+    }
+
+    function finishLogo() {
+        const pxs = document.querySelectorAll('.pixel');
+        gameState.logo = Array.from(pxs).map(p => p.style.backgroundColor || "#fff");
+        gameState.hasStarted = true;
+        saveGame(); updateUI(); renderSavedLogo();
+        showScreen('locker-room');
+    }
+
+    function renderSavedLogo() {
+        const container = document.getElementById('saved-logo-display');
+        container.innerHTML = "";
+        const grid = document.createElement('div');
+        grid.style.display = "grid"; grid.style.gridTemplateColumns = "repeat(10, 4px)";
+        grid.style.justifyContent = "center";
+        gameState.logo.forEach(c => {
+            const p = document.createElement('div');
+            p.style.width = "4px"; p.style.height = "4px"; p.style.backgroundColor = c;
+            grid.appendChild(p);
+        });
+        container.appendChild(grid);
+    }
+
+    function saveGame() { localStorage.setItem('pixelFifa_v3', JSON.stringify(gameState)); }
+    function resetGame() { if(confirm("Silinsin mi?")) { localStorage.clear(); location.reload(); } }
+
+    init();
+</script>
+</body>
+</html>
