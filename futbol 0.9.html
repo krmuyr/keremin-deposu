@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>KRM Career: Pro Striker Edition</title>
+    <style>
+        :root { --krm: #ffd700; --pitch: #2d5a27; }
+        body { background: #1a1a1a; color: white; font-family: 'Courier New', monospace; margin: 0; display: flex; flex-direction: column; align-items: center; }
+        #game-container { width: 650px; background: #333; border: 6px solid #555; padding: 15px; margin-top: 10px; position: relative; box-shadow: 0 0 20px #000; }
+        .screen { display: none; }
+        .active { display: block; }
+        .header-ui { background: #000; padding: 10px; display: flex; justify-content: space-between; border: 2px solid var(--krm); margin-bottom: 10px; font-size: 13px; align-items: center; }
+        canvas { background: var(--pitch); border: 4px solid #fff; display: block; margin: 0 auto; cursor: crosshair; }
+        button { background: #444; color: #fff; border: 3px outset #666; padding: 10px; cursor: pointer; font-family: inherit; font-weight: bold; margin: 5px; }
+        button:hover { background: #666; }
+        input { padding: 10px; background: #222; color: #fff; border: 2px solid #555; margin: 5px; font-family: inherit; }
+        .grid-container { display: grid; grid-template-columns: repeat(10, 18px); gap: 1px; margin: 15px auto; width: 190px; background: #555; }
+        .pixel { width: 18px; height: 18px; background: #fff; }
+        .shop-item { border: 2px solid var(--krm); padding: 10px; margin: 5px; display: inline-block; width: 130px; background: #222; text-align: center; }
+        #match-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 40px; color: var(--krm); text-shadow: 3px 3px #000; pointer-events: none; display: none; z-index: 100; text-align: center; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div class="header-ui" id="main-header" style="display:none;">
+        <div><span id="ui-team">TAKIM</span> (<span id="ui-age" style="color:red">18</span> Yaş)</div>
+        <div id="ui-score" style="font-size:20px; color:var(--krm)">0 - 0</div>
+        <div id="ui-time">DK: 0'</div>
+        <div>KRM: <span id="ui-money" style="color:var(--krm)">0</span></div>
+    </div>
+
+    <!-- KURULUM -->
+    <div id="setup-screen" class="screen active">
+        <h1>YENİ KARİYER</h1>
+        <input type="text" id="input-country" placeholder="Ülken"><br>
+        <input type="text" id="input-team" placeholder="Takım İsmin"><br>
+        <button onclick="nextStep('logo-screen')">İLERİ: LOGO ÇİZ</button>
+    </div>
+
+    <!-- LOGO TASARIM -->
+    <div id="logo-screen" class="screen">
+        <h2>LOGO TASARLA</h2>
+        <div id="logo-grid" class="grid-container"></div>
+        <input type="color" id="logo-color" value="#ff0000">
+        <button onclick="saveLogo()">KAYDET</button>
+    </div>
+
+    <!-- MENÜ -->
+    <div id="menu-screen" class="screen">
+        <div id="display-logo" style="margin-bottom: 10px;"></div>
+        <h2 id="menu-title">ANA MENÜ</h2>
+        <p id="aging-info">Yaşlanmaya kalan maç: 5</p>
+        <button onclick="startMatch()" style="background:#2d5a27; width:200px; height:50px; font-size:18px;">MAÇA ÇIK</button><br>
+        <button onclick="showScreen('shop-screen')">MAĞAZA (SHOP)</button>
+        <button onclick="checkTransfer()" style="background:#b8860b">TRANSFER TEKLİFLERİ</button><br>
+        <button onclick="showScreen('career-screen')">İSTATİSTİKLER</button>
+    </div>
+
+    <!-- MAĞAZA -->
+    <div id="shop-screen" class="screen">
+        <h2>KRM STORE</h2>
+        <div class="shop-item"><p>Hız Kramponu</p><p>500 KRM</p><button onclick="buy('speed')">AL</button></div>
+        <div class="shop-item"><p>Gençlik İksiri</p><p>2000 KRM</p><button onclick="buy('youth')">AL</button></div>
+        <br><button onclick="showScreen('menu-screen')">GERİ DÖ</button>
+    </div>
+
+    <!-- MAÇ SAHASI -->
+    <div id="match-screen" class="screen">
+        <canvas id="field" width="600" height="400"></canvas>
+        <div id="match-msg">GOOOL!</div>
+    </div>
+
+    <!-- KARİYER ÖZETİ -->
+    <div id="career-screen" class="screen">
+        <h2>KARİYER DEFTERİ</h2>
+        <p>Ülke: <span id="stat-country"></span></p>
+        <p>Toplam Gol: <span id="stat-goals"></span></p>
+        <p>Oynanan Maç: <span id="stat-matches"></span></p>
+        <button onclick="showScreen('menu-screen')">DÖN</button>
+    </div>
+</div>
+
+<script>
+    let state = { country: "", team: "", money: 0, age: 18, goals: 0, matchesPlayed: 0, speedBoost: 0, logo: [], kit: Array(100).fill("#0000ff"), hasStarted: false };
+    let match = { active: false, time: 0, pScore: 0, eScore: 0, ballOwner: null, mode: 'normal' };
+    let penalty = { shots: 0, pGoals: 0, eGoals: 0 };
+    let keys = {};
+    let timerInt;
+
+    const canvas = document.getElementById('field');
+    const ctx = canvas.getContext('2d');
+    const player = { x: 100, y: 200, s: 3.5 };
+    const enemies = [{ x: 450, y: 100, s: 2.8, hasBall: false }, { x: 450, y: 300, s: 2.8, hasBall: false }];
+    const ball = { x: 300, y: 200, r: 7, dx: 0, dy: 0, f: 0.97 };
+
+    function init() {
+        const saved = localStorage.getItem('krm_final_v10');
+        if(saved) {
+            state = JSON.parse(saved);
+            if(state.hasStarted) { 
+                showScreen('menu-screen'); 
+                document.getElementById('main-header').style.display = 'flex'; 
+                updateUI(); 
+                renderLogoDisplay(); 
+            }
+        }
+        createGrid('logo-grid', 'logo-color');
+    }
+
+    function createGrid(id, colorId) {
+        const g = document.getElementById(id); g.innerHTML = "";
+        for(let i=0; i<100; i++) {
+            let p = document.createElement('div'); p.className = 'pixel';
+            p.onclick = () => p.style.background = document.getElementById(colorId).value;
+            g.appendChild(p);
+        }
+    }
+
+    // --- MAÇ MANTIĞI VE ŞUT ÇEKME ---
+    function startMatch() {
+        showScreen('match-screen');
+        match = { active: true, time: 0, pScore: 0, eScore: 0, ballOwner: null, mode: 'normal' };
+        penalty = { shots: 0, pGoals: 0, eGoals: 0 };
+        updateScoreBoard();
+        resetPos();
+        gameLoop();
+        if(timerInt) clearInterval(timerInt);
+        timerInt = setInterval(() => {
+            if(!match.active || match.mode !== 'normal') return;
+            match.time++;
+            document.getElementById('ui-time').innerText = `DK: ${match.time}'`;
+            if(match.time >= 90) { 
+                if(match.pScore === match.eScore) startPenalty();
+                else endMatch();
+            }
+        }, 300);
+    }
+
+    function update() {
+        if(!match.active || match.mode !== 'normal') return;
+        let speed = player.s + state.speedBoost;
+        if(keys['w'] || keys['ArrowUp']) player.y -= speed;
+        if(keys['s'] || keys['ArrowDown']) player.y += speed;
+        if(keys['a'] || keys['ArrowLeft']) player.x -= speed;
+        if(keys['d'] || keys['ArrowRight']) player.x += speed;
+
+        // Duvarlardan Sekme (Top dışarı çıkmaz)
+        if(ball.x < 10 && (ball.y < 150 || ball.y > 250)) { ball.dx *= -1.2; ball.x = 11; }
+        if(ball.x > 590 && (ball.y < 150 || ball.y > 250)) { ball.dx *= -1.2; ball.x = 589; }
+        if(ball.y < 10 || ball.y > 390) ball.dy *= -1.2;
+
+        // Oyuncu Topu Alır
+        let distP = Math.hypot(player.x - ball.x, player.y - ball.y);
+        if(distP < 15 && match.ballOwner !== 'enemy') match.ballOwner = 'player';
+
+        if(match.ballOwner === 'player') {
+            ball.x = player.x + 10; ball.y = player.y;
+            if(keys[' ']) { match.ballOwner = null; ball.dx = 14; ball.dy = (Math.random()-0.5)*4; }
+        }
+
+        // RAKİP ZEKA VE ŞUT
+        enemies.forEach(e => {
+            let distE = Math.hypot(e.x - ball.x, e.y - ball.y);
+            if(match.ballOwner !== 'enemy') {
+                e.x += (ball.x - e.x) * 0.04;
+                e.y += (ball.y - e.y) * 0.04;
+                if(distE < 15) { match.ballOwner = 'enemy'; e.hasBall = true; }
+            } else if(e.hasBall) {
+                e.x -= e.s; ball.x = e.x - 10; ball.y = e.y;
+                
+                // Rakip Şut Çeker!
+                if(e.x < 250 && Math.abs(e.y - 200) < 120) {
+                    e.hasBall = false; match.ballOwner = null;
+                    ball.dx = -15; ball.dy = (200 - ball.y) * 0.15;
+                }
+                if(Math.hypot(player.x - e.x, player.y - e.y) < 18) { e.hasBall = false; match.ballOwner = 'player'; }
+            }
+        });
+
+        ball.x += ball.dx; ball.y += ball.dy;
+        ball.dx *= ball.f; ball.dy *= ball.f;
+
+        if(ball.x > 595 && ball.y > 150 && ball.y < 250) goal("P");
+        if(ball.x < 5 && ball.y > 150 && ball.y < 250) goal("E");
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, 600, 400);
+        ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.strokeRect(5,5,590,390);
+        ctx.fillStyle = "white"; ctx.strokeRect(595, 150, 5, 100); ctx.strokeRect(0, 150, 5, 100); // Kaleler
+        
+        // Saha Çizgileri
+        ctx.beginPath(); ctx.arc(300, 200, 40, 0, 7); ctx.stroke();
+        ctx.moveTo(300, 5); ctx.lineTo(300, 395); ctx.stroke();
+
+        ctx.fillStyle = "blue"; ctx.fillRect(player.x-10, player.y-10, 20, 20); // Oyuncu
+        ctx.fillStyle = "red"; enemies.forEach(e => ctx.fillRect(e.x-10, e.y-10, 20, 20)); // Rakipler
+        ctx.fillStyle = "yellow"; ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, 7); ctx.fill(); // Top
+    }
+
+    function gameLoop() { if(match.active) { update(); draw(); requestAnimationFrame(gameLoop); } }
+    
+    function goal(who) {
+        match.active = false;
+        if(who === "P") { match.pScore++; state.goals++; } else { match.eScore++; }
+        updateScoreBoard();
+        showMsg(who === "P" ? "GOOOL!" : "YEDİK!");
+        setTimeout(() => { if(match.time < 90) { match.active = true; resetPos(); gameLoop(); } }, 1000);
+    }
+
+    function startPenalty() {
+        match.mode = 'penalty';
+        alert("BERABERLİK! 5 Penaltı Hakkı. Fare ile Kaleye Tıkla!");
+        resetPenaltyRound();
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+        if(match.mode !== 'penalty' || penalty.shots >= 5) return;
+        const rect = canvas.getBoundingClientRect();
+        const targetY = e.clientY - rect.top;
+        ball.dx = 18; ball.dy = (targetY - ball.y) * 0.15;
+        setTimeout(() => {
+            penalty.shots++;
+            if(targetY > 150 && targetY < 250) { penalty.pGoals++; state.goals++; showMsg("GOL!"); }
+            else showMsg("DIŞARI!");
+            if(Math.random() > 0.5) penalty.eGoals++;
+            if(penalty.shots >= 5) {
+                alert(`Penaltı Sonucu: ${penalty.pGoals}-${penalty.eGoals}`);
+                if(penalty.pGoals > penalty.eGoals) match.pScore++;
+                endMatch();
+            } else { setTimeout(resetPenaltyRound, 800); }
+        }, 500);
+    });
+
+    function resetPenaltyRound() { ball.x = 450; ball.y = 200; player.x = 400; player.y = 200; ball.dx = 0; ball.dy = 0; }
+    function resetPos() { player.x = 100; player.y = 200; ball.x = 300; ball.y = 200; ball.dx = 0; ball.dy = 0; match.ballOwner = null; }
+    function updateScoreBoard() { document.getElementById('ui-score').innerText = `${match.pScore} - ${match.eScore}`; }
+    function showMsg(txt) { let m = document.getElementById('match-msg'); m.innerText = txt; m.style.display = 'block'; setTimeout(()=> m.style.display='none', 800); }
+    
+    function endMatch() {
+        clearInterval(timerInt);
+        let win = match.pScore > match.eScore;
+        let r = (match.pScore * 100) + (win ? 500 : 150);
+        state.money += r; state.matchesPlayed++;
+        if(state.matchesPlayed % 5 === 0) state.age++;
+        alert(`Maç Bitti! Kazanç: ${r} KRM`);
+        updateUI(); showScreen('menu-screen');
+    }
+
+    function checkTransfer() {
+        if(state.goals < 5) { alert("Daha fazla gol lazım!"); return; }
+        let t = ["Real Madrid", "Barcelona", "KRM City", "Manchester Pix"].sort(()=>.5-Math.random())[0];
+        if(confirm(t + " seni istiyor! Kabul mü?")) { state.team = t; updateUI(); }
+    }
+
+    function buy(type) {
+        if(type === 'speed' && state.money >= 500) { state.money -= 500; state.speedBoost += 0.7; alert("Hızlandın!"); }
+        else if(type === 'youth' && state.money >= 2000) { state.money -= 2000; state.age = Math.max(16, state.age-1); alert("Gençleştin!"); }
+        updateUI();
+    }
+
+    function nextStep(n) { state.country = document.getElementById('input-country').value; state.team = document.getElementById('input-team').value; if(state.team) showScreen(n); }
+    function saveLogo() { const px = document.querySelectorAll('#logo-grid .pixel'); state.logo = Array.from(px).map(p => p.style.background || "#fff"); state.hasStarted = true; document.getElementById('main-header').style.display = 'flex'; showScreen('menu-screen'); updateUI(); renderLogoDisplay(); }
+    function updateUI() { document.getElementById('ui-team').innerText = state.team; document.getElementById('ui-money').innerText = state.money; document.getElementById('ui-age').innerText = state.age; localStorage.setItem('krm_final_v10', JSON.stringify(state)); }
+    function renderLogoDisplay() { const c = document.getElementById('display-logo'); c.innerHTML = ""; const m = document.createElement('div'); m.style.display="grid"; m.style.gridTemplateColumns="repeat(10,4px)"; state.logo.forEach(x => { let p=document.createElement('div'); p.style.width="4px"; p.style.height="4px"; p.style.background=x; m.appendChild(p); }); c.appendChild(m); }
+    function showScreen(id) { document.querySelectorAll('.screen').forEach(s => s.classList.remove('active')); document.getElementById(id).classList.add('active'); if(id==='career-screen'){ document.getElementById('stat-country').innerText = state.country; document.getElementById('stat-goals').innerText = state.goals; document.getElementById('stat-matches').innerText = state.matchesPlayed; } }
+
+    window.addEventListener('keydown', e => keys[e.key] = true);
+    window.addEventListener('keyup', e => keys[e.key] = false);
+    init();
+</script>
+</body>
+</html>
